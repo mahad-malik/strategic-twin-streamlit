@@ -34,27 +34,10 @@ pip install -r requirements.txt
 
 streamlit run src/app.py
 
-📂 Project Structure
-
-/src
-  ├── model.py               # Block and Attribute classes
-  ├── nlp_to_model.py        # NLP extraction and mapping
-  ├── main.py                # Optional entry point for CLI or scripts
-  └── app.py                 # Streamlit interface
-
-/docs
-  └── project_overview.pdf  
 📈 Example Inputs
 "Electricity price has increased to €0.45 per kWh, and our consumption is now 12,000 kWh monthly."
 
 System will extract attributes, simulate costs, and generate insights.
 
-🚀 Future Improvements
-Support for real-time data ingestion (e.g., energy APIs)
 
-Enhanced entity recognition using LLMs
-
-Visual dependency graphs (e.g., D3.js or Graphviz)
-
-Scenario saving, versioning, and collaboration
 
