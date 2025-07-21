@@ -1,109 +1,214 @@
-import os
-import sys
 import asyncio
-import streamlit as st
-import spacy
-import base64
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.prompts import PromptTemplate
-from langchain.schema import HumanMessage
-from config import GEMINI_API_KEY
-from langchain_community.vectorstores import Chroma
-from neo4j import GraphDatabase
+import sys
 
+# --- Fix for "no current event loop in thread" error on Windows ---
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 try:
-    asyncio.get_event_loop()
+    asyncio.get_running_loop()
 except RuntimeError:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-nlp = spacy.load("en_core_web_sm")
+import os
+import streamlit as st
+import spacy
+import base64
+import pandas as pd
+import altair as alt
+import graphviz
+import time
 
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain.schema import HumanMessage
+from config import GEMINI_API_KEY
+from langchain_community.vectorstores import Chroma
+from src.nlp_to_model import extract_attributes_from_text
+from model import create_block_from_text_results
+from simulation_engine import Block, Attribute
+from neo4j import GraphDatabase
+
+# ---------------- Setup ----------------
+
+nlp = spacy.load("en_core_web_sm")
 os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",  
-    location="us-central1"
-)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", location="us-central1")
 embeddings = GoogleGenerativeAIEmbeddings(model="embedding-001")
+vectorstore = Chroma(persist_directory="./chroma_db", embedding_function=embeddings)
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "test1234"))
 
-persist_directory = "./chroma_db"
-vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embeddings)
-
-neo4j_uri = "bolt://localhost:7687"
-neo4j_user = "neo4j"
-neo4j_password = "test1234"
-driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
-
-logo_path = "logo.png"
-
-def get_base64_of_bin_file(bin_file):
-    with open(bin_file, 'rb') as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
-
-def show_logo():
-    logo_base64 = get_base64_of_bin_file(logo_path)
-    logo_html = f'''
-        <div style="position:fixed; bottom:10px; right:20px; opacity:0.85; z-index:100;">
-            <img src="data:image/png;base64,{logo_base64}" width="120" />
-            <div style="text-align:center; font-size:12px; color:#444;">Circonomit AI Prototype</div>
-        </div>
-    '''
-    st.markdown(logo_html, unsafe_allow_html=True)
+# ---------------- Utilities ----------------
 
 def extract_entities(text):
-    doc = nlp(text)
-    entities = [(ent.text, ent.label_) for ent in doc.ents]
-    return entities
+    return [(ent.text, ent.label_) for ent in nlp(text).ents]
 
 def add_to_neo4j(entities):
     with driver.session() as session:
         for entity, label in entities:
-            session.run(
-                "MERGE (e:Entity {name: $name, type: $type})",
-                name=entity,
-                type=label,
-            )
+            session.run("MERGE (e:Entity {name: $name, type: $type})", name=entity, type=label)
 
 def add_to_vectorstore(text):
     vectorstore.add_texts([text])
 
-st.title("Circonomit AI Prototype")
+# ---------------- Streamlit App ----------------
 
-show_logo()
+st.set_page_config(page_title="STK Production GmbH", layout="wide")
+st.title("🤖 STK Production GmbH – AI Assistant")
 
-if st.button("Run demo pipeline"):
-    with open("sample.txt", "r") as f:
-        text = f.read()
+# ---------------- SECTION 1: Describe Business ----------------
 
-    with st.expander("📄 Original Text", expanded=True):
-        st.write(text)
+st.header("🧾 Describe Your Business Process")
+with st.expander("💡 What does this section do?"):
+    st.markdown("""
+    In this section, you can describe what’s happening in your business — for example, rising electricity prices or increased consumption.
 
-    entities = extract_entities(text)
-    with st.expander(f"🧠 Extracted Entities ({len(entities)})", expanded=True):
+    We will:
+    - Extract named entities from your text
+    - Store them in Neo4j
+    - Generate a summary using Gemini
+    - Attempt to extract numeric inputs and simulate estimated energy costs
+    """)
+
+input_text = st.text_area("Tell us what’s happening – cost changes, production, electricity use...")
+
+if st.button("💬 Analyze My Description"):
+    if not input_text.strip():
+        st.warning("⚠️ Please describe your business process first.")
+    else:
+        st.info("⏳ Understanding your input...")
+        progress = st.progress(0)
+        for i in range(60):
+            time.sleep(0.01)
+            progress.progress(i + 1)
+
+        # Extract entities & store
+        entities = extract_entities(input_text)
         if entities:
+            add_to_neo4j(entities)
+            add_to_vectorstore(input_text)
+            st.markdown("### 🔍 We found these key terms")
             st.table([{"Entity": e[0], "Type": e[1]} for e in entities])
         else:
-            st.info("No entities found.")
+            st.info("No named terms (like companies, amounts, locations) were found.")
 
-    # Store text embedding
-    add_to_vectorstore(text)
-    st.success("✅ Text embedded & stored locally!")
+        # Summary
+        with st.expander("💡 What does Gemini do here?"):
+            st.markdown("This summary is generated by Gemini based on your business input — useful for decision makers and analysts.")
+        st.markdown("### 📋 Gemini’s Summary of Your Process")
+        prompt_text = f"Summarize the business process: {input_text}"
+        gemini_response = llm.predict_messages([HumanMessage(content=prompt_text)])
+        st.write(gemini_response.content)
 
-    # Store entities in Neo4j
-    add_to_neo4j(entities)
-    st.success("✅ Entities stored in Neo4j graph!")
+        # Attributes & Simulation – only final clean version
+        results = extract_attributes_from_text(input_text)
+        if results:
+            block = create_block_from_text_results(results)
+            st.markdown("### 📊 Estimated Cost Based on Current Inputs")
+            try:
+                sim_result = block.simulate()
+                if not isinstance(sim_result, dict):
+                    raise ValueError("simulate() did not return a dict")
 
-    # Ask Gemini for summary
-    prompt = PromptTemplate.from_template("Summarise the business process: {text}")
-    prompt_text = prompt.format(text=text)
-    response = llm([HumanMessage(content=prompt_text)])
+                total_cost = sim_result.get("TotalEnergyCost")
+                if total_cost is not None:
+                    st.success(f"✅ Based on your inputs, your estimated total monthly energy cost is about **€{total_cost:,.2f}**.")
 
-    with st.expander("🤖 Gemini Summary", expanded=True):
-        st.write(response.content)
+                # Show simulation results in friendly table
+                display = []
+                for k, v in sim_result.items():
+                    if k == "ElectricityPrice":
+                        label = "Electricity Price (€ per kWh)"
+                    elif k == "ConsumptionKWh":
+                        label = "Monthly Consumption (kWh)"
+                    elif k == "MaintenanceCost":
+                        label = "Monthly Maintenance Cost (€)"
+                    elif k == "TotalEnergyCost":
+                        label = "Total Energy Cost (€)"
+                    else:
+                        label = k
+                    display.append({"Metric": label, "Value": f"{v:,.2f}" if isinstance(v, (int, float)) else v})
+                st.table(display)
+            except Exception as e:
+                st.error(f"❌ Simulation failed: {e}")
+        else:
+            st.warning("❌ Couldn’t extract any numerical values.")
 
-st.info("This is a prototype combining: local vector db + Neo4j + Gemini + spaCy")
+# ---------------- SECTION 2: Scenario Simulator ----------------
+
+st.markdown("---")
+st.header("🔄 Simulate a New Scenario")
+with st.expander("💡 What does this section do?"):
+    st.markdown("""
+    This section allows you to simulate a 'what-if' scenario by modifying electricity price and consumption.
+
+    We’ll compare your scenario with the baseline values to help assess cost sensitivity.
+    
+    You’ll get:
+    - Total energy cost
+    - Tax estimation
+    - Bar chart comparison
+    """)
+
+# Base block
+base_block = Block("BaseModel")
+base_block.add_attribute(Attribute("ElectricityPrice", "input"))
+base_block.add_attribute(Attribute("ConsumptionKWh", "input"))
+base_block.set_input("ElectricityPrice", 0.45)
+base_block.set_input("ConsumptionKWh", 12000)
+
+def total_energy_formula(ctx, visited, cache):
+    return ctx.attributes["ElectricityPrice"].evaluate(ctx, visited, cache) * ctx.attributes["ConsumptionKWh"].evaluate(ctx, visited, cache)
+
+def tax_formula(ctx, visited, cache):
+    return ctx.attributes["TotalEnergyCost"].evaluate(ctx, visited, cache) * 0.19
+
+base_block.add_attribute(Attribute("TotalEnergyCost", "calculated", total_energy_formula))
+base_block.add_attribute(Attribute("EnergyTax", "calculated", tax_formula))
+
+st.write("📌 Current Assumptions:")
+st.write({
+    "ElectricityPrice": "€0.45 / kWh",
+    "ConsumptionKWh": "12,000 kWh"
+})
+
+st.markdown("### ✏️ Try a Different Scenario")
+new_price = st.number_input("🔹 Electricity Price (EUR/kWh)", value=0.45, step=0.01)
+new_kwh = st.number_input("🔹 Monthly Electricity Consumption (kWh)", value=12000, step=100)
+
+if st.button("📈 Run Scenario Simulation"):
+    st.info("🧠 Running your simulation...")
+
+    scenario_block = Block("ScenarioModel")
+    scenario_block.add_attribute(Attribute("ElectricityPrice", "input"))
+    scenario_block.add_attribute(Attribute("ConsumptionKWh", "input"))
+    scenario_block.set_input("ElectricityPrice", new_price)
+    scenario_block.set_input("ConsumptionKWh", new_kwh)
+    scenario_block.add_attribute(Attribute("TotalEnergyCost", "calculated", total_energy_formula))
+    scenario_block.add_attribute(Attribute("EnergyTax", "calculated", tax_formula))
+
+    base_result = base_block.simulate()
+    scenario_result = scenario_block.simulate()
+
+    df = pd.DataFrame({
+        "Attribute": list(base_result.keys()),
+        "Current": list(base_result.values()),
+        "New": list(scenario_result.values())
+    })
+
+    st.subheader("📊 Comparison Table")
+    st.dataframe(df)
+
+    df_melt = df.melt(id_vars="Attribute", var_name="Scenario", value_name="Value")
+    chart = alt.Chart(df_melt).mark_bar().encode(
+        x="Attribute:N", y="Value:Q", color="Scenario:N"
+    ).properties(width=700)
+    st.altair_chart(chart)
+
+    st.markdown("### 📌 Key Differences")
+    for key in base_result:
+        base_val = base_result[key]
+        new_val = scenario_result.get(key)
+        if isinstance(base_val, (int, float)) and isinstance(new_val, (int, float)) and base_val != new_val:
+            st.write(f"🔸 **{key}** changed by `{new_val - base_val:.2f}`")
