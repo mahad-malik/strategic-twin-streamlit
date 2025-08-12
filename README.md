@@ -27,15 +27,12 @@ Follow these steps to run the application locally.
 Prerequisites:
 Python 3.8+
 An active Google AI API Key with the Gemini API enabled.
+
 Step 1: Clone the repository
-code
-Bash
+
 git clone https://github.com/<Your-GitHub-Username>/<Your-Repository-Name>.git
 cd <Your-Repository-Name>
 Step 2: Create and activate a virtual environment
-code
-Bash
-# Create the virtual environment
 python -m venv venv
 
 # Activate it (Windows)
@@ -46,8 +43,6 @@ source venv/bin/activate
 
 Step 3: Install the required libraries
 This project includes a requirements.txt file to install all necessary dependencies.
-code
-Bash
 pip install -r requirements.txt
 
 Step 4: Set up your API Key
