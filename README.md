@@ -1,4 +1,4 @@
-
+![Application Screenshot](assets/screenshot.png)
 An interactive decision intelligence platform built with Streamlit and Google Gemini. This application serves as a "Strategic Twin" for a fictional manufacturing company, allowing leaders to simulate complex business scenarios, analyze risks, and make data-driven decisions in minutes.
 
 1. Introduction: A New Way to Navigate Complexity
