@@ -1,4 +1,4 @@
-
+![Application Screenshot](assets/screenshot.png)
 An interactive decision intelligence platform built with Streamlit and Google Gemini. This application serves as a "Strategic Twin" for a fictional manufacturing company, allowing leaders to simulate complex business scenarios, analyze risks, and make data-driven decisions in minutes.
 
 1. Introduction: A New Way to Navigate Complexity
@@ -52,9 +52,8 @@ Inside that folder, create a file named secrets.toml.
 
 Add your API key to this file like this:
 GEMINI_API_KEY = "AIzaSy...your...key...here..."
-In app.py, change the line where you configure the API key from this:
+In app.py, change the line where you configure the API key:
 
-genai.configure(api_key="AIzaSyBtEvYXwR4A5JumqXM5iciPl_cishyhWUQ")
 to this:
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
