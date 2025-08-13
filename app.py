@@ -8,6 +8,8 @@ import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
 import google.generativeai as genai
+from fpdf import FPDF
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="STK Produktion GmbH")
 
@@ -15,10 +17,11 @@ try:
     genai.configure(api_key="API_KEY_HERE")
     model = genai.GenerativeModel("gemini-1.5-flash-latest")
 except Exception as e:
-    st.error(f"FATAL: Failed to configure Google AI. Please check your API key. Error: {e}")
+    st.error(f"FATAL: Failed to configure Google AI. Please check your API key and secrets configuration. Error: {e}")
     st.stop()
 
 def inject_custom_css() -> None:
+    """Injects custom CSS for styling the Streamlit application."""
     st.markdown(
         """<style>
         body { color: #E0E0E0; } .stApp { background-color: #0E1117; } .logo-text { font-size: 24px; font-weight: bold; color: #E0E0E0; }
@@ -113,8 +116,8 @@ def run_enhanced_simulation(
         "costs": {"Material": material_cost * quantity, "Tariff": tariff_cost_unit * quantity, "Energy": energy_cost * quantity, "Carbon (CO2)": co2_cost_unit * quantity},
         "co2_components": {"material": embodied_co2, "production": production_co2_kg, "route": route_co2, "total_unit": total_co2_footprint_unit_kg},
         "compliance": {"is_compliant": is_compliant, "budget": carbon_budget_tons, "overshoot": compliance_overshoot_tons},
-        "is_tariff_problem": tariff_cost_unit > 0,
         "selected_material": selected_material,
+        "selected_product": selected_product,
         "tariff_rate": tariff_rate_percent,
         "selected_supplier": selected_supplier,
     }
@@ -191,7 +194,7 @@ def get_params_from_natural_language(user_query: str, graph: nx.DiGraph) -> Opti
     )
     try:
         response = model.generate_content(prompt)
-        cleaned = re.sub(r"```json\n|\n```|```", "", response.text).strip() # Improved cleaning
+        cleaned = re.sub(r"```json\n|\n```|```", "", response.text).strip()
         return json.loads(cleaned)
     except Exception as e:
         st.error(f"Error interpreting request: {e}")
@@ -261,6 +264,7 @@ def render_structured_advice(response_text: str, is_comparison: bool = False, is
 def render_kpi_dashlets(results: Dict[str, Any]) -> None:
     kpis = results["kpis"]
     col1, col2, col3 = st.columns(3)
+    
     with col1:
         st.markdown(f"""<div class="kpi-container green"><div class="kpi-title">Annual Gross Margin</div><div class="kpi-value">€{kpis['Gross Margin']:,.0f}</div></div>""", unsafe_allow_html=True)
     with col2:
@@ -275,7 +279,7 @@ def render_fidelity_kpis(results: Dict[str, Any], run_time: float, actual_margin
     with k1:
         st.markdown(f"""<div class="kpi-container blue"><div class="kpi-title">Sim Time</div><div class="fidelity-kpi-value">{run_time:.2f} s</div></div>""", unsafe_allow_html=True)
     with k2:
-        est_cost = 0.00015  
+        est_cost = 0.00015
         st.markdown(f"""<div class="kpi-container blue"><div class="kpi-title">AI Cost</div><div class="fidelity-kpi-value">~${est_cost:.4f}</div></div>""", unsafe_allow_html=True)
     with k3:
         if actual_margin > 0:
@@ -302,7 +306,8 @@ def render_fidelity_kpis(results: Dict[str, Any], run_time: float, actual_margin
         st.markdown(f"""<div class="kpi-container {color_class}"><div class="kpi-title">Confidence</div><div class="fidelity-kpi-value">{confidence_level}</div></div>""", unsafe_allow_html=True)
 
 
-def render_cost_flow_chart(costs: Dict[str, float]) -> None:
+def get_cost_flow_chart_fig(costs: Dict[str, float]) -> go.Figure:
+    """Generates and returns the Plotly figure for the cost flow chart."""
     labels = list(costs.keys()) + ["Total Cost"]
     values = list(costs.values()) + [sum(costs.values())]
     text_vals = [f"€{v:,.0f}" for v in values]
@@ -314,7 +319,12 @@ def render_cost_flow_chart(costs: Dict[str, float]) -> None:
         increasing={"marker": {"color": "#3498DB"}},
         totals={"marker": {"color": "#E74C3C"}}
     ))
-    fig.update_layout(showlegend=False, plot_bgcolor="#0E1117", paper_bgcolor="#0E1117", font_color="#E0E0E0", margin=dict(l=0, r=0, t=0, b=0))
+    fig.update_layout(showlegend=False, plot_bgcolor="#0E1117", paper_bgcolor="#0E1117", font_color="#E0E0E0", margin=dict(l=0, r=0, t=40, b=0), title="Annual Cost Flow")
+    return fig
+
+def render_cost_flow_chart(costs: Dict[str, float]) -> None:
+    """Renders the cost flow chart in the Streamlit UI."""
+    fig = get_cost_flow_chart_fig(costs)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -336,7 +346,8 @@ def render_cost_breakdown_and_ai(costs: Dict[str, float]) -> None:
             st.warning("Could not parse AI cost advice.")
 
 
-def render_stylized_route_map(graph: nx.DiGraph, active_supplier: str, results: Dict[str, Any]) -> None:
+def get_stylized_route_map_fig(graph: nx.DiGraph, active_supplier: str, results: Dict[str, Any]) -> go.Figure:
+    """Generates and returns the Plotly figure for the supply route map."""
     pos = nx.get_node_attributes(graph, "pos")
     fig = go.Figure()
     supplier_nodes = list(graph.successors(results["selected_material"])) + ["STK Factory"]
@@ -360,7 +371,7 @@ def render_stylized_route_map(graph: nx.DiGraph, active_supplier: str, results: 
         x0, y0 = pos[supplier]
         x1, y1 = pos["STK Factory"]
         mx, my = (x0 + x1) / 2, (y0 + y1) / 2
-        ctrl_x, ctrl_y = mx + (y1 - y0) * 0.2, my - (x1 - x0) * 0.2 # Control point for curve
+        ctrl_x, ctrl_y = mx + (y1 - y0) * 0.2, my - (x1 - x0) * 0.2
         path = f"M {x0},{y0} Q {ctrl_x},{ctrl_y} {x1},{y1}"
         is_active = (supplier == active_supplier)
         shapes.append(dict(type="path", path=path, line=dict(color="#E74C3C" if is_active else "#555", width=4 if is_active else 2, dash="solid" if is_active else "dash")))
@@ -370,10 +381,15 @@ def render_stylized_route_map(graph: nx.DiGraph, active_supplier: str, results: 
             route_co2_kg = graph.edges[supplier, "STK Factory"]["route_co2_kg"]
             fig.add_annotation(x=mx, y=my, text=f"Cost: €{material_cost:,.0f}<br>Route CO₂: {route_co2_kg/1000:,.1f}t", showarrow=False, bgcolor="#0E1117", bordercolor="#fff", borderwidth=1, font=dict(size=12, color="#E0E0E0"))
 
-    fig.update_layout(shapes=shapes, showlegend=False, plot_bgcolor="#1A1F2B", paper_bgcolor="#1A1F2B", font_color="#E0E0E0",
+    fig.update_layout(title="Interactive Supply Route", shapes=shapes, showlegend=False, plot_bgcolor="#1A1F2B", paper_bgcolor="#1A1F2B", font_color="#E0E0E0",
                       xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.5, 2]),
                       yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-0.5, 2.5]),
-                      margin=dict(l=20, r=20, t=20, b=20))
+                      margin=dict(l=20, r=20, t=40, b=20))
+    return fig
+
+def render_stylized_route_map(graph: nx.DiGraph, active_supplier: str, results: Dict[str, Any]) -> None:
+    """Renders the supply route map in the Streamlit UI."""
+    fig = get_stylized_route_map_fig(graph, active_supplier, results)
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -409,25 +425,31 @@ def run_parallel_scenarios(graph: nx.DiGraph, product: str, material: str, suppl
     return sorted(results, key=lambda x: x["tariff_rate"])
 
 
-def render_parallel_comparison(results: List[Dict[str, Any]]) -> None:
-    st.markdown('<div class="cost-flow-title">Visual Comparison Chart</div>', unsafe_allow_html=True)
+def get_parallel_comparison_fig(results: List[Dict[str, Any]]) -> go.Figure:
+    """Generates and returns the Plotly figure for the parallel scenario comparison."""
     data_for_df = [{"tariff_rate": f"{res['tariff_rate']}% Tariff", "Gross Margin": res["kpis"]["Gross Margin"], "Total Cost": res["kpis"]["Total Cost"]} for res in results]
     df = pd.DataFrame(data_for_df)
     if df.empty:
-        st.warning("No scenarios were run.")
-        return
+        return go.Figure().update_layout(title="No scenarios were run.")
     df["tariff_rate_num"] = [res["tariff_rate"] for res in results]
     df = df.sort_values(by="tariff_rate_num").set_index("tariff_rate")
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df.index, y=df["Gross Margin"], name="Gross Margin", marker_color="#2ECC71", text=df["Gross Margin"].apply(lambda x: f"€{x/1000:,.0f}k"), textposition="auto"))
     fig.add_trace(go.Bar(x=df.index, y=df["Total Cost"], name="Total Cost", marker_color="#E74C3C", text=df["Total Cost"].apply(lambda x: f"€{x/1000:,.0f}k"), textposition="auto"))
     fig.update_layout(barmode="group", title_text="Financial Impact Across Tariff Scenarios", plot_bgcolor="#1A1F2B", paper_bgcolor="#1A1F2B", font_color="#E0E0E0")
+    return fig
+
+def render_parallel_comparison(results: List[Dict[str, Any]]) -> None:
+    """Renders the parallel scenario comparison in the Streamlit UI."""
+    st.markdown('<div class="cost-flow-title">Visual Comparison Chart</div>', unsafe_allow_html=True)
+    if not results:
+        st.warning("No scenarios were run.")
+        return
+    fig = get_parallel_comparison_fig(results)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def run_sensitivity_analysis(graph: nx.DiGraph, selected_product: str, selected_material: str, selected_supplier: str, quantity: int, variation_percent: int = 10) -> List[Dict[str, Any]]:
-    baseline_results = run_enhanced_simulation(graph, selected_product, selected_material, selected_supplier, quantity)
-    baseline_margin = baseline_results["kpis"]["Gross Margin"]
     sensitivity_results: List[Dict[str, Any]] = []
     variables_to_test = {
         "Material Cost": {"type": "node", "id": selected_material, "attr": "base_cost"},
@@ -439,20 +461,16 @@ def run_sensitivity_analysis(graph: nx.DiGraph, selected_product: str, selected_
         variation = original_value * (variation_percent / 100.0)
         high_run = run_enhanced_simulation(graph, selected_product, selected_material, selected_supplier, quantity, node_overrides={var_details["id"]: {var_details["attr"]: original_value + variation}})
         low_run = run_enhanced_simulation(graph, selected_product, selected_material, selected_supplier, quantity, node_overrides={var_details["id"]: {var_details["attr"]: original_value - variation}})
-        # The impact is the difference between the high and low runs, divided by 2 to represent the +/- range
         impact = (high_run["kpis"]["Gross Margin"] - low_run["kpis"]["Gross Margin"]) / 2
         sensitivity_results.append({"variable": var_name, "impact": impact})
     return sorted(sensitivity_results, key=lambda x: abs(x["impact"]), reverse=True)
 
 
-def render_tornado_chart(sensitivity_results: List[Dict[str, Any]], variation_percent: int) -> None:
-    st.markdown('<div class="cost-flow-title">Sensitivity Analysis (Tornado Chart)</div>', unsafe_allow_html=True)
-    st.write(f"This chart shows how much the Annual Gross Margin could change (in €) if these key variables fluctuate by **+/- {variation_percent}%**.")
+def get_tornado_chart_fig(sensitivity_results: List[Dict[str, Any]], variation_percent: int) -> go.Figure:
+    """Generates and returns the Plotly figure for the sensitivity tornado chart."""
     if not sensitivity_results:
-        st.warning("No sensitivity data to display.")
-        return
+        return go.Figure().update_layout(title="No sensitivity data to display.")
     df = pd.DataFrame(sensitivity_results).sort_values(by="impact", ascending=True)
-    # For tornado, we show the range, so we create a 'base' and 'delta'
     df['base'] = 0
     fig = go.Figure()
     fig.add_trace(go.Bar(
@@ -465,15 +483,23 @@ def render_tornado_chart(sensitivity_results: List[Dict[str, Any]], variation_pe
         xaxis_title="Change in Annual Gross Margin (€)", yaxis_title="Business Variable",
         plot_bgcolor="#1A1F2B", paper_bgcolor="#1A1F2B", font_color="#E0E0E0", bargap=0.4
     )
+    return fig
+
+def render_tornado_chart(sensitivity_results: List[Dict[str, Any]], variation_percent: int) -> None:
+    """Renders the sensitivity tornado chart in the Streamlit UI."""
+    st.markdown('<div class="cost-flow-title">Sensitivity Analysis (Tornado Chart)</div>', unsafe_allow_html=True)
+    st.write(f"This chart shows how much the Annual Gross Margin could change (in €) if these key variables fluctuate by **+/- {variation_percent}%**.")
+    if not sensitivity_results:
+        st.warning("No sensitivity data to display.")
+        return
+    fig = get_tornado_chart_fig(sensitivity_results, variation_percent)
     st.plotly_chart(fig, use_container_width=True)
 
 
 def render_ontology_graph(graph: nx.DiGraph) -> None:
-    """
-    Renders the complete knowledge graph ontology using Plotly.
-    """
+    """Renders the complete knowledge graph ontology using Plotly."""
     pos = nx.get_node_attributes(graph, "pos")
-    if not pos: 
+    if not pos:
         pos = nx.spring_layout(graph, seed=42, k=0.9)
 
     edge_x, edge_y = [], []
@@ -514,6 +540,164 @@ def render_ontology_graph(graph: nx.DiGraph) -> None:
             )
     st.plotly_chart(fig, use_container_width=True)
 
+# ==============================================================================
+# PART 2.5: PDF REPORTING FUNCTIONS (ADVANCED VERSION)
+# ==============================================================================
+
+class PDF(FPDF):
+    def header(self):
+        self.set_font("Arial", "B", 12)
+        self.cell(0, 10, "STK Produktion GmbH - Strategic Twin Report", 0, 0, "C")
+        self.ln(10)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Arial", "I", 8)
+        self.cell(0, 10, f"Page {self.page_no()}", 0, 0, "C")
+        
+    def chapter_title(self, title):
+        self.set_font("Arial", "B", 14)
+        self.cell(0, 10, title, 0, 1, "L")
+        self.ln(5)
+        
+    def chapter_body(self, content):
+        self.set_font("Arial", "", 11)
+        self.multi_cell(0, 5, content.encode('latin-1', 'replace').decode('latin-1'))
+        self.ln()
+
+    def add_kpi_block(self, title, value, color):
+        self.set_font("Arial", "B", 10)
+        self.set_text_color(*color)
+        self.cell(60, 8, title, border=1)
+        self.set_font("Arial", "", 12)
+        self.set_text_color(0, 0, 0)
+        self.cell(0, 8, value, border=1)
+        self.ln()
+
+def save_fig_to_bytes(fig: go.Figure) -> bytes:
+    """Saves a Plotly figure to a byte stream for embedding."""
+    return fig.to_image(format="png", width=800, height=450, scale=2)
+
+@st.cache_data
+def create_pdf_report(_results, _advice_text, _cost_advice_text, _G, _st_session_state):
+    """Generates the full PDF report from the current session state and results."""
+    pdf = PDF()
+    pdf.add_page()
+    
+    # --- Title Page ---
+    pdf.set_font("Arial", "B", 24)
+    pdf.cell(0, 15, "Executive Summary", 0, 1, "C")
+    pdf.set_font("Arial", "", 10)
+    pdf.cell(0, 8, f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", 0, 1, "C")
+    pdf.ln(10)
+    
+    pdf.chapter_title("1. Scenario Parameters")
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(40, 7, "Product:", 0, 0)
+    pdf.cell(0, 7, _st_session_state['selected_product'], 0, 1)
+    pdf.cell(40, 7, "Supplier:", 0, 0)
+    pdf.cell(0, 7, _st_session_state['selected_supplier'], 0, 1)
+    pdf.cell(40, 7, "Annual Quantity:", 0, 0)
+    pdf.cell(0, 7, str(_st_session_state['quantity']), 0, 1)
+    pdf.ln(5)
+    
+    pdf.chapter_title("2. Key Performance Indicators")
+    kpis = _results['kpis']
+    pdf.add_kpi_block("Annual Gross Margin", f"EUR {kpis['Gross Margin']:,.0f}", (34, 167, 240))
+    pdf.add_kpi_block("Annual Total Cost", f"EUR {kpis['Total Cost']:,.0f}", (231, 76, 60))
+    pdf.add_kpi_block("Annual CO2 Footprint", f"{kpis['Carbon Footprint']:,.1f} tons CO2e", (52, 152, 219))
+    pdf.ln(10)
+    
+    # --- AI Briefing ---
+    pdf.chapter_title("3. AI Strategic Briefing")
+    try:
+        observation = re.search(r"<observation>(.*?)</observation>", _advice_text, re.DOTALL).group(1).strip()
+        implication = re.search(r"<implication>(.*?)</implication>", _advice_text, re.DOTALL).group(1).strip()
+        question = re.search(r"<strategic_question>(.*?)</strategic_question>", _advice_text, re.DOTALL).group(1).strip()
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 7, "Observation:", 0, 1)
+        pdf.chapter_body(observation)
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 7, "Implication:", 0, 1)
+        pdf.chapter_body(implication)
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 7, "Strategic Question:", 0, 1)
+        pdf.chapter_body(question)
+    except:
+        pdf.chapter_body("Could not parse AI strategic advice.")
+    pdf.ln(5)
+
+    # --- Cost Analysis Page ---
+    pdf.add_page()
+    pdf.chapter_title("4. Annual Cost Analysis")
+    try:
+        observation = re.search(r"<cost_observation>(.*?)</cost_observation>", _cost_advice_text, re.DOTALL).group(1).strip()
+        suggestion = re.search(r"<optimization_suggestion>(.*?)</optimization_suggestion>", _cost_advice_text, re.DOTALL).group(1).strip()
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 7, "AI Cost Observation:", 0, 1)
+        pdf.chapter_body(observation)
+        pdf.set_font("Arial", "B", 11)
+        pdf.cell(0, 7, "AI Optimization Suggestion:", 0, 1)
+        pdf.chapter_body(suggestion)
+    except:
+        pdf.chapter_body("Could not parse AI cost advice.")
+    pdf.ln(5)
+    
+    cost_fig = get_cost_flow_chart_fig(_results["costs"])
+    pdf.image(save_fig_to_bytes(cost_fig), w=180)
+    pdf.ln(5)
+
+    # --- Supply Route and Compliance ---
+    pdf.chapter_title("5. Supply Route & Compliance")
+    supply_fig = get_stylized_route_map_fig(_G, _st_session_state['selected_supplier'], _results)
+    pdf.image(save_fig_to_bytes(supply_fig), w=180)
+    
+    compliance = _results["compliance"]
+    pdf.set_font("Arial", "", 11)
+    pdf.cell(0, 7, f"Compliance Status: {'COMPLIANT' if compliance['is_compliant'] else 'NON-COMPLIANT'}", 0, 1)
+    pdf.cell(0, 7, f"Carbon Budget: {compliance['budget']:.1f} tons | Emissions: {_results['kpis']['Carbon Footprint']:.1f} tons", 0, 1)
+    pdf.ln(10)
+    
+    # --- Analysis Section (if run) ---
+    active_analysis = _st_session_state.get("active_analysis", "none")
+    if active_analysis == "tariff" and _st_session_state.get("parallel_results"):
+        pdf.add_page()
+        pdf.chapter_title("6. Tariff Scenario Analysis")
+        comparison_advice = get_gemini_comparison_advice(_st_session_state['parallel_results'])
+        try:
+            finding = re.search(r"<key_finding>(.*?)</key_finding>", comparison_advice, re.DOTALL).group(1).strip()
+            tipping = re.search(r"<tipping_point>(.*?)</tipping_point>", comparison_advice, re.DOTALL).group(1).strip()
+            reco = re.search(r"<executive_recommendation>(.*?)</executive_recommendation>", comparison_advice, re.DOTALL).group(1).strip()
+            pdf.set_font("Arial", "B", 11)
+            pdf.cell(0, 7, "Key Finding:", 0, 1); pdf.chapter_body(finding)
+            pdf.cell(0, 7, "Tipping Point:", 0, 1); pdf.chapter_body(tipping)
+            pdf.cell(0, 7, "Executive Recommendation:", 0, 1); pdf.chapter_body(reco)
+        except:
+            pdf.chapter_body("Could not parse AI analysis summary.")
+        pdf.ln(5)
+        tariff_fig = get_parallel_comparison_fig(_st_session_state['parallel_results'])
+        pdf.image(save_fig_to_bytes(tariff_fig), w=180)
+        
+    elif active_analysis == "sensitivity" and _st_session_state.get("sensitivity_results"):
+        pdf.add_page()
+        pdf.chapter_title("6. Sensitivity Analysis")
+        sensitivity_advice = get_gemini_sensitivity_summary(_st_session_state['sensitivity_results'])
+        try:
+            factor = re.search(r"<primary_factor>(.*?)</primary_factor>", sensitivity_advice, re.DOTALL).group(1).strip()
+            implication = re.search(r"<strategic_implication>(.*?)</strategic_implication>", sensitivity_advice, re.DOTALL).group(1).strip()
+            tactic = re.search(r"<risk_mitigation_tactic>(.*?)</risk_mitigation_tactic>", sensitivity_advice, re.DOTALL).group(1).strip()
+            pdf.set_font("Arial", "B", 11)
+            pdf.cell(0, 7, "Primary Risk Factor:", 0, 1); pdf.chapter_body(factor)
+            pdf.cell(0, 7, "Strategic Implication:", 0, 1); pdf.chapter_body(implication)
+            pdf.cell(0, 7, "Risk Mitigation Tactic:", 0, 1); pdf.chapter_body(tactic)
+        except:
+             pdf.chapter_body("Could not parse AI analysis summary.")
+        pdf.ln(5)
+        tornado_fig = get_tornado_chart_fig(_st_session_state['sensitivity_results'], _st_session_state['sensitivity_variation_display'])
+        pdf.image(save_fig_to_bytes(tornado_fig), w=180)
+    
+    return bytes(pdf.output())
+
 
 # ==============================================================================
 # PART 3: MAIN APPLICATION LOGIC
@@ -525,6 +709,7 @@ if "quantity" not in st.session_state: st.session_state.quantity = 10
 if "selected_product" not in st.session_state: st.session_state.selected_product = "PRO-A-250"
 if "selected_supplier" not in st.session_state: st.session_state.selected_supplier = "China Metals Inc."
 if "active_analysis" not in st.session_state: st.session_state.active_analysis = "none"
+if "pdf_report" not in st.session_state: st.session_state.pdf_report = None
 
 st.markdown('<div class="logo-text">STK Produktion GmbH</div>', unsafe_allow_html=True)
 st.write("---")
@@ -562,6 +747,7 @@ with st.expander("ℹ️ Click here for Application Guide & Data Briefs"):
         2.  **Run Deeper Analysis**: Use the Analysis Tools in the sidebar to run what-if scenarios like tariff comparisons or sensitivity analysis.
         3.  **Check Fidelity**: Use the Model Calibration section in the sidebar to validate the twin against your real-world data and see how closely the simulation aligns with reality.
         4.  **Explore the Ontology**: Click the 'Ontology Graph' tab to see the underlying knowledge graph that defines the business ecosystem.
+        5.  **Export Your Findings**: Use the Reporting tool in the sidebar to generate and download a comprehensive PDF report of your current scenario and analysis.
         """)
     st.subheader("Product Briefings")
     col1, col2 = st.columns(2)
@@ -571,7 +757,9 @@ with st.expander("ℹ️ Click here for Application Guide & Data Briefs"):
         st.markdown("""<div class="briefing-card" style="border-color:#2ECC71; background-color: rgba(46, 204, 113, 0.1);"><div class="briefing-header" style="color:#2ECC71;">PRO-B-300: Premium Green Component</div><p>Premium, sustainable product using local, higher-cost green materials for compliance and lower CO2.</p><ul><li><strong>Sale Price:</strong> €32,000</li><li><strong>Material:</strong> Green Aluminum</li></ul></div>""", unsafe_allow_html=True)
 
 st.sidebar.title("Scenario Controls")
-def mark_interaction() -> None: st.session_state.user_has_interacted = True
+def mark_interaction() -> None:
+    st.session_state.user_has_interacted = True
+    st.session_state.pdf_report = None 
 st.sidebar.number_input("1. Annual Production Quantity", min_value=1, key="quantity", on_change=mark_interaction)
 st.sidebar.selectbox("2. Select a Product", ["PRO-A-250", "PRO-B-300"], key="selected_product", on_change=mark_interaction)
 
@@ -581,7 +769,7 @@ if st.session_state.selected_product == "PRO-A-250":
     st.sidebar.selectbox("3. Select Supplier", available_suppliers, key="selected_supplier", on_change=mark_interaction)
 else:
     selected_material = "Green Aluminum"
-    st.session_state.selected_supplier = "Deutsche Aluminium GmbH" 
+    st.session_state.selected_supplier = "Deutsche Aluminium GmbH"
     st.sidebar.selectbox("3. Supplier (Locked by Product)", ["Deutsche Aluminium GmbH"], disabled=True, key="supplier_b_disabled_lock")
 
 st.sidebar.title("Model Calibration")
@@ -594,6 +782,7 @@ start_time = time.time()
 results = run_enhanced_simulation(G, st.session_state.selected_product, selected_material, st.session_state.selected_supplier, st.session_state.quantity)
 run_time = time.time() - start_time
 advice_text = get_gemini_advice(results)
+cost_advice_text = get_gemini_cost_advice(results["costs"])
 
 tab1, tab2 = st.tabs(["Main Dashboard", "Ontology Graph"])
 
@@ -637,15 +826,16 @@ with st.sidebar.expander("1. Parallel Scenario Analysis", expanded=True):
     get_tariff_summary = st.checkbox("Get AI summary for tariffs", value=True, key="get_tariff_summary_key")
     if st.button("Run Tariff Comparison", key="run_tariff_button"):
         st.session_state.active_analysis = "tariff"
+        st.session_state.pdf_report = None 
         if st.session_state.selected_supplier != "China Metals Inc.":
-            st.session_state.parallel_results = None 
+            st.session_state.parallel_results = None
         else:
-            try: 
+            try:
                 tariffs_to_run = [int(t.strip()) for t in tariff_scenarios_str.split(",") if t.strip()]
                 with st.spinner("Running tariff scenarios..."):
                     st.session_state.parallel_results = run_parallel_scenarios(G, st.session_state.selected_product, selected_material, st.session_state.selected_supplier, st.session_state.quantity, tariffs_to_run)
-            
-            except ValueError: 
+
+            except ValueError:
                 st.error("Invalid input. Please enter only comma-separated numbers for the tariffs (e.g., 0, 15, 30).")
                 st.session_state.parallel_results = None
 
@@ -655,13 +845,40 @@ with st.sidebar.expander("2. Sensitivity Analysis", expanded=True):
     get_sensitivity_summary = st.checkbox("Get AI summary for sensitivity", value=True, key="get_sensitivity_summary_key")
     if st.button("Run Sensitivity Analysis", key="run_sensitivity_button"):
         st.session_state.active_analysis = "sensitivity"
+        st.session_state.pdf_report = None 
         with st.spinner("Running sensitivity analysis..."):
             st.session_state.sensitivity_results = run_sensitivity_analysis(G, st.session_state.selected_product, selected_material, st.session_state.selected_supplier, st.session_state.quantity, sensitivity_variation)
             st.session_state.sensitivity_variation_display = sensitivity_variation
 
+# --- Sidebar Reporting Tool ---
+st.sidebar.title("Reporting")
+st.sidebar.markdown("Generate a comprehensive PDF report of the current scenario and analysis.")
+if st.sidebar.button("Generate PDF Report", key="generate_pdf_button"):
+    with st.spinner("Generating PDF report... This may take a moment."):
+        session_state_copy = {
+            'selected_product': st.session_state.selected_product,
+            'selected_supplier': st.session_state.selected_supplier,
+            'quantity': st.session_state.quantity,
+            'active_analysis': st.session_state.get('active_analysis'),
+            'parallel_results': st.session_state.get('parallel_results'),
+            'sensitivity_results': st.session_state.get('sensitivity_results'),
+            'sensitivity_variation_display': st.session_state.get('sensitivity_variation_display')
+        }
+        st.session_state.pdf_report = create_pdf_report(results, advice_text, cost_advice_text, G, session_state_copy)
+
+if st.session_state.pdf_report:
+    st.sidebar.download_button(
+        label="Download PDF Report",
+        data=st.session_state.pdf_report,
+        file_name=f"STK_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+        mime="application/pdf"
+    )
+
+
+# --- Analysis Results Display (at the bottom of the main tab) ---
 active_analysis = st.session_state.get("active_analysis", "none")
 if active_analysis != "none":
-    with tab1: 
+    with tab1:
         st.markdown("---")
         st.header(f"Analysis Results: {active_analysis.title()}")
         if active_analysis == "tariff":
