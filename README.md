@@ -52,9 +52,8 @@ Inside that folder, create a file named secrets.toml.
 
 Add your API key to this file like this:
 GEMINI_API_KEY = "AIzaSy...your...key...here..."
-In app.py, change the line where you configure the API key from this:
+In app.py, change the line where you configure the API key:
 
-genai.configure(api_key="AIzaSyBtEvYXwR4A5JumqXM5iciPl_cishyhWUQ")
 to this:
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
